@@ -1,0 +1,6 @@
+{
+  "name": "Zenmart BD - Premium Tech & Decor",
+  "description": "Curated minimalist workspace essentials, aesthetic smart ambient lights & contemporary tech gadgets with fast Cash on Delivery across Bangladesh.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
