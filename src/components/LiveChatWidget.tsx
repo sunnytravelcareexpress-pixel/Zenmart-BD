@@ -10,11 +10,10 @@ import {
   ShieldCheck,
   Minimize2,
   Maximize2,
-  Flame,
-  CloudCheck
+  Flame
 } from 'lucide-react';
 import { ChatMessage, AppUser } from '../types';
-import { sendChatMessageToFirestore, subscribeToChatMessages } from '../firebase';
+import { sendChatMessageToFirestore, subscribeToSessionChatMessages } from '../firebase';
 
 interface LiveChatWidgetProps {
   onOpenOrderTrack?: () => void;
@@ -24,6 +23,17 @@ interface LiveChatWidgetProps {
 export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack, currentUser }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
+
+  // Dedicated private session ID for each visitor
+  const [sessionId] = useState<string>(() => {
+    let sid = localStorage.getItem('zenmart_visitor_session_id');
+    if (!sid) {
+      sid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      localStorage.setItem('zenmart_visitor_session_id', sid);
+    }
+    return sid;
+  });
+
   const [customerName, setCustomerName] = useState(() => currentUser?.displayName || localStorage.getItem('zenmart_chat_name') || '');
   const [customerPhone, setCustomerPhone] = useState(() => currentUser?.phoneNumber || localStorage.getItem('zenmart_chat_phone') || '');
   const [inputMessage, setInputMessage] = useState('');
@@ -43,6 +53,7 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome-msg',
+      sessionId,
       sender: 'support',
       senderName: 'Zenmart BD Support',
       text: 'আসসালামু আলাইকুম! Zenmart BD-তে স্বাগতম। আপনি কি কোনো গ্যাজেট বা ডেলিভারি সম্পর্কে জানতে চান? আপনার যেকোনো প্রশ্ন লিখুন।',
@@ -63,9 +74,10 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
     }
   }, [messages, isOpen]);
 
-  // Subscribe to real-time chat messages from Firebase Firestore
+  // Subscribe to real-time chat messages ONLY for this private session
   useEffect(() => {
-    const unsubscribe = subscribeToChatMessages((firestoreMsgs) => {
+    if (!sessionId) return;
+    const unsubscribe = subscribeToSessionChatMessages(sessionId, (firestoreMsgs) => {
       if (firestoreMsgs && firestoreMsgs.length > 0) {
         setIsFirebaseSynced(true);
         // Combine welcome message with firestore messages
@@ -81,7 +93,7 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, []);
+  }, [sessionId]);
 
   const handleSendMessage = async (textToSend?: string) => {
     const text = (textToSend || inputMessage).trim();
@@ -100,6 +112,7 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
 
     const newLocalMsg: ChatMessage = {
       id: tempId,
+      sessionId,
       sender: 'user',
       senderName: name,
       senderPhone: phone,
@@ -113,9 +126,10 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
     setInputMessage('');
     setIsSending(true);
 
-    // Save to Firebase Firestore
+    // Save to Firebase under this private session
     try {
       const savedId = await sendChatMessageToFirestore({
+        sessionId,
         sender: 'user',
         senderName: name,
         senderPhone: phone,
@@ -145,6 +159,7 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
           const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const replyMsg: ChatMessage = {
             id: `reply-${Date.now()}`,
+            sessionId,
             sender: 'support',
             senderName: 'Zenmart BD Assistant',
             text: autoReplyText,
@@ -152,8 +167,9 @@ export const LiveChatWidget: React.FC<LiveChatWidgetProps> = ({ onOpenOrderTrack
             createdAt: Date.now(),
           };
           setMessages((prev) => [...prev, replyMsg]);
-          // Also save automated response to Firestore
+          // Also save automated response to this session in Firestore
           await sendChatMessageToFirestore({
+            sessionId,
             sender: 'bot',
             senderName: 'Zenmart BD Assistant',
             text: autoReplyText,

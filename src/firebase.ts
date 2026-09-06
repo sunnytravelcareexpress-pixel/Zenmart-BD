@@ -188,10 +188,12 @@ export async function updateOrderStatusInFirestore(orderId: string, status: Orde
 // ----------------------------------------------------
 
 /**
- * Send a chat message and save to Firebase Realtime Database (/chats)
+ * Send a chat message and save to Firebase Realtime Database.
+ * Messages are partitioned by sessionId so that each visitor's conversation is completely private.
  */
 export async function sendChatMessageToFirestore(
   message: {
+    sessionId?: string;
     sender: 'user' | 'support' | 'bot';
     senderName: string;
     senderPhone?: string;
@@ -201,26 +203,46 @@ export async function sendChatMessageToFirestore(
   const now = new Date();
   const formattedTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const timestamp = Date.now();
+  const sessionId = message.sessionId || 'default_session';
 
   try {
-    // Save to Firebase Realtime Database
-    const chatsRef = ref(rtdb, 'chats');
-    const newChatRef = push(chatsRef);
-    const generatedKey = newChatRef.key;
+    // 1. Save to session-specific node
+    const sessionMsgsRef = ref(rtdb, `chat_sessions/${sessionId}/messages`);
+    const newChatRef = push(sessionMsgsRef);
+    const generatedKey = newChatRef.key || `msg_${timestamp}`;
 
-    const payload = {
+    const payload: ChatMessage = {
       id: generatedKey,
-      ...message,
+      sessionId,
+      sender: message.sender,
+      senderName: message.senderName,
+      senderPhone: message.senderPhone,
+      text: message.text,
       timestamp: formattedTime,
       createdAt: timestamp,
     };
 
     await set(newChatRef, payload);
-    console.log(`[Firebase RTDB] Chat message saved with key: ${generatedKey}`);
 
-    // Mirror to Firestore collection if accessible
+    // 2. Update session metadata for admin list overview
+    const metaRef = ref(rtdb, `chat_sessions/${sessionId}/meta`);
+    const metaUpdates: any = {
+      sessionId,
+      lastMessage: message.text,
+      lastTimestamp: formattedTime,
+      updatedAt: timestamp,
+      lastSender: message.sender,
+    };
+    if (message.sender === 'user') {
+      metaUpdates.userName = message.senderName;
+      if (message.senderPhone) metaUpdates.userPhone = message.senderPhone;
+    }
+    await update(metaRef, metaUpdates);
+
+    // 3. Also mirror to legacy chats node for backward compatibility
     try {
-      await addDoc(collection(db, 'chats'), payload);
+      const chatsRef = ref(rtdb, `chats/${generatedKey}`);
+      await set(chatsRef, payload);
     } catch {}
 
     return generatedKey;
@@ -231,7 +253,159 @@ export async function sendChatMessageToFirestore(
 }
 
 /**
- * Real-time listener for live chat messages from Firebase Realtime Database
+ * Real-time listener for live chat messages for a specific session.
+ * Ensures a customer only ever receives and views their own conversation!
+ */
+export function subscribeToSessionChatMessages(
+  sessionId: string,
+  onData: (messages: ChatMessage[]) => void
+) {
+  if (!sessionId) {
+    onData([]);
+    return () => {};
+  }
+
+  try {
+    const sessionMsgsRef = ref(rtdb, `chat_sessions/${sessionId}/messages`);
+    const unsubscribe = onValue(
+      sessionMsgsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const val = snapshot.val();
+          const messages: ChatMessage[] = Object.keys(val).map((key) => {
+            const d = val[key];
+            return {
+              id: key,
+              sessionId,
+              sender: d.sender || 'user',
+              senderName: d.senderName || 'Anonymous',
+              senderPhone: d.senderPhone || '',
+              text: d.text || '',
+              timestamp: d.timestamp || 'Just now',
+              createdAt: d.createdAt || 0,
+            };
+          });
+
+          // Sort chronological
+          messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          onData(messages);
+        } else {
+          onData([]);
+        }
+      },
+      (err) => {
+        console.warn('[Firebase RTDB] Session chat subscription warning:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  } catch (e) {
+    console.warn('[Firebase RTDB] Failed to listen to session chats:', e);
+    return () => {};
+  }
+}
+
+export interface ChatSessionItem {
+  sessionId: string;
+  userName: string;
+  userPhone: string;
+  lastMessage: string;
+  lastTimestamp: string;
+  updatedAt: number;
+  lastSender: string;
+  messages: ChatMessage[];
+}
+
+/**
+ * Real-time listener for all user chat sessions (for Admin Console)
+ */
+export function subscribeToAllChatSessions(
+  onData: (sessions: ChatSessionItem[]) => void
+) {
+  try {
+    const sessionsRef = ref(rtdb, 'chat_sessions');
+    const unsubscribe = onValue(
+      sessionsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const val = snapshot.val();
+          const sessionList: ChatSessionItem[] = Object.keys(val).map((sid) => {
+            const s = val[sid];
+            const meta = s.meta || {};
+            const msgsObj = s.messages || {};
+            const messages: ChatMessage[] = Object.keys(msgsObj).map((mid) => {
+              const m = msgsObj[mid];
+              return {
+                id: mid,
+                sessionId: sid,
+                sender: m.sender || 'user',
+                senderName: m.senderName || 'Anonymous',
+                senderPhone: m.senderPhone || '',
+                text: m.text || '',
+                timestamp: m.timestamp || 'Just now',
+                createdAt: m.createdAt || 0,
+              };
+            });
+
+            messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+            return {
+              sessionId: sid,
+              userName: meta.userName || messages[0]?.senderName || `Customer (${sid.slice(-4)})`,
+              userPhone: meta.userPhone || messages[0]?.senderPhone || '',
+              lastMessage: meta.lastMessage || messages[messages.length - 1]?.text || 'No messages',
+              lastTimestamp: meta.lastTimestamp || messages[messages.length - 1]?.timestamp || '',
+              updatedAt: meta.updatedAt || messages[messages.length - 1]?.createdAt || Date.now(),
+              lastSender: meta.lastSender || messages[messages.length - 1]?.sender || 'user',
+              messages,
+            };
+          });
+
+          // Sort by latest message first
+          sessionList.sort((a, b) => b.updatedAt - a.updatedAt);
+          onData(sessionList);
+        } else {
+          onData([]);
+        }
+      },
+      (err) => {
+        console.warn('[Firebase RTDB] Chat sessions subscription warning:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  } catch (e) {
+    console.warn('[Firebase RTDB] Failed to listen to all chat sessions:', e);
+    return () => {};
+  }
+}
+
+/**
+ * Clear chat history: either for a specific session or for all sessions
+ */
+export async function clearChatHistory(sessionId?: string): Promise<boolean> {
+  try {
+    if (sessionId) {
+      // Clear specific session
+      await remove(ref(rtdb, `chat_sessions/${sessionId}`));
+    } else {
+      // Clear all sessions and legacy chats
+      await remove(ref(rtdb, 'chat_sessions'));
+      await remove(ref(rtdb, 'chats'));
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Firebase RTDB] Error clearing chat history:', err);
+    return false;
+  }
+}
+
+/**
+ * Legacy Real-time listener for live chat messages
  */
 export function subscribeToChatMessages(onData: (messages: ChatMessage[]) => void) {
   try {
@@ -245,6 +419,7 @@ export function subscribeToChatMessages(onData: (messages: ChatMessage[]) => voi
             const d = val[key];
             return {
               id: key,
+              sessionId: d.sessionId || 'default',
               sender: d.sender || 'user',
               senderName: d.senderName || 'Anonymous',
               senderPhone: d.senderPhone || '',
@@ -371,6 +546,48 @@ export async function updateProductPriceInFirestore(productId: string, price: nu
     return true;
   } catch (e) {
     console.warn('[Firebase RTDB] Error updating product price:', e);
+    return false;
+  }
+}
+
+/**
+ * Update complete product details in Firebase Realtime Database
+ */
+export async function updateProductInFirestore(product: Product): Promise<boolean> {
+  try {
+    const prodRef = ref(rtdb, `products/${product.id}`);
+    await set(prodRef, {
+      ...product,
+      updatedAt: Date.now(),
+    });
+    return true;
+  } catch (e) {
+    console.warn('[Firebase RTDB] Error updating product:', e);
+    return false;
+  }
+}
+
+/**
+ * Set a specific product as Featured Daily Special and unmark others
+ */
+export async function setFeaturedProductInFirestore(productId: string): Promise<boolean> {
+  try {
+    const prodsSnap = await get(ref(rtdb, 'products'));
+    if (prodsSnap.exists()) {
+      const val = prodsSnap.val();
+      const updates: { [key: string]: any } = {};
+      for (const id of Object.keys(val)) {
+        updates[`products/${id}/featured`] = (id === productId);
+      }
+      await update(ref(rtdb), updates);
+      return true;
+    } else {
+      const prodRef = ref(rtdb, `products/${productId}`);
+      await update(prodRef, { featured: true });
+      return true;
+    }
+  } catch (e) {
+    console.warn('[Firebase RTDB] Error setting featured product:', e);
     return false;
   }
 }

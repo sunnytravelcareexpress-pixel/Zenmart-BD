@@ -51,6 +51,7 @@ export interface Order {
 
 export interface ChatMessage {
   id: string;
+  sessionId?: string;
   sender: 'user' | 'support' | 'bot';
   senderName: string;
   senderPhone?: string;

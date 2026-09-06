@@ -13,7 +13,7 @@ import {
   Sparkles,
   AlertCircle
 } from 'lucide-react';
-import { AppUser, isAuthorizedAdmin, AUTHORIZED_ADMIN_EMAILS } from '../types';
+import { AppUser, isAuthorizedAdmin } from '../types';
 import { loginWithEmail, registerWithEmail, loginQuickGuest } from '../firebase';
 
 interface AuthModalProps {
@@ -63,7 +63,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const authorized = isAuthorizedAdmin(result.user.email);
       if (isAdminLogin && !authorized) {
         setErrorMessage(
-          `লগ ইন সফল হয়েছে, তবে '${result.user.email}' অ্যাডমিন হিসেবে অনুমোদিত নয়! অ্যাডমিন প্যানেলে শুধুমাত্র Sunny.travelcareexpress@gmail.com ও Official.sunny.ext@gmail.com এক্সেস করতে পারবে।`
+          `লগ ইন সফল হয়েছে, তবে আপনার একাউন্টটি অ্যাডমিন হিসেবে অনুমোদিত নয়! অ্যাডমিন প্যানেলে শুধুমাত্র অনুমোদিত স্টোর অ্যাডমিনিস্ট্রেটর প্রবেশ করতে পারবেন।`
         );
         onUserLoggedIn(result.user);
         return;
@@ -213,27 +213,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {tab === 'login' && !showQuickGuest && (
             <form onSubmit={handleLogin} className="space-y-4">
               {isAdminLogin && (
-                <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 space-y-2 mb-2">
-                  <div className="flex items-center gap-1.5 font-bold text-blue-900">
-                    <ShieldCheck className="w-4 h-4 text-blue-600" />
-                    <span>অ্যাডমিন একাউন্ট ভেরিফিকেশন</span>
+                <div className="p-3.5 bg-slate-900 text-white border border-slate-800 rounded-xl text-xs space-y-1.5 mb-2 shadow-xs">
+                  <div className="flex items-center gap-1.5 font-bold text-emerald-400">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <span>অ্যাডমিন সিকিউরিটি ভেরিফিকেশন</span>
                   </div>
-                  <p className="text-[11px] text-blue-700 leading-relaxed">
-                    অ্যাডমিন প্যানেল লক করা। শুধুমাত্র নিচের ২টি অনুমোদিত ইমেইল থেকে লগ ইন করলে এক্সেস মিলবে:
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    এই প্যানেলটি শুধুমাত্র স্টোর ম্যানেজমেন্ট অ্যাডমিনের জন্য সংরক্ষিত। আপনার অনুমোদিত অ্যাডমিন ইমেইল ও পাসওয়ার্ড প্রদান করে প্রবেশ করুন।
                   </p>
-                  <div className="flex flex-col sm:flex-row gap-1.5 pt-0.5">
-                    {AUTHORIZED_ADMIN_EMAILS.map((adminMail) => (
-                      <button
-                        key={adminMail}
-                        type="button"
-                        onClick={() => setEmail(adminMail)}
-                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-blue-100 border border-blue-300 text-[11px] font-mono text-blue-800 font-bold transition-colors text-left truncate shadow-2xs"
-                        title="ক্লিক করে এই ইমেইলটি ইনপুটে বসান"
-                      >
-                        {adminMail}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               )}
 

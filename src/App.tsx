@@ -25,6 +25,8 @@ import {
   updateProductPriceInFirestore,
   saveProductToFirestore,
   deleteProductFromFirestore,
+  updateProductInFirestore,
+  setFeaturedProductInFirestore,
   subscribeToAuth,
   logoutUser
 } from './firebase';
@@ -251,6 +253,26 @@ export default function App() {
     await saveProductToFirestore(newProduct);
   };
 
+  const handleUpdateProduct = async (updatedProduct: Product) => {
+    setProducts((prev) =>
+      prev.map((p) => (p.id === updatedProduct.id ? updatedProduct : p))
+    );
+    if (detailProduct?.id === updatedProduct.id) {
+      setDetailProduct(updatedProduct);
+    }
+    await updateProductInFirestore(updatedProduct);
+  };
+
+  const handleSetFeaturedProduct = async (productId: string) => {
+    setProducts((prev) =>
+      prev.map((p) => ({
+        ...p,
+        featured: p.id === productId,
+      }))
+    );
+    await setFeaturedProductInFirestore(productId);
+  };
+
   // Open Direct WhatsApp hotline
   const handleOpenWhatsAppHelp = () => {
     const text = encodeURIComponent('Hello Zenmart BD! I would like to inquire about products & delivery.');
@@ -324,6 +346,8 @@ export default function App() {
         onUpdateProductPrice={handleUpdateProductPrice}
         onUpdateOrderStatus={handleUpdateOrderStatus}
         onAddProduct={handleAddProduct}
+        onUpdateProduct={handleUpdateProduct}
+        onSetFeaturedProduct={handleSetFeaturedProduct}
         onDeleteProduct={handleDeleteProduct}
         currentUser={currentUser}
         onOpenLogin={() => {
