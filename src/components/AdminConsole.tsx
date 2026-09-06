@@ -99,6 +99,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const [chatSearch, setChatSearch] = useState('');
   const [isClearingChat, setIsClearingChat] = useState(false);
   const [showClearConfirmModal, setShowClearConfirmModal] = useState<'selected' | 'all' | null>(null);
+  const adminChatScrollRef = React.useRef<HTMLDivElement | null>(null);
 
   // Edit Product Modal & Featured Picker Modal states
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -126,6 +127,12 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       if (unsubscribe) unsubscribe();
     };
   }, [isAdminAuthorized]);
+
+  useEffect(() => {
+    if (activeTab === 'chats') {
+      adminChatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeTab, selectedSessionId, chatSessions]);
 
   // If the user is NOT an authorized administrator, render the strict Security Lock Gate
   if (!isAdminAuthorized) {
@@ -253,17 +260,68 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
   const handleSendAdminReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminReplyText.trim() || !activeSession) return;
+    const reply = adminReplyText.trim();
+    if (!reply || !activeSession) return;
 
-    setIsSendingReply(true);
-    await sendChatMessageToFirestore({
+    const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const localId = `admin-reply-${Date.now()}`;
+    const newMsg: ChatMessage = {
+      id: localId,
       sessionId: activeSession.sessionId,
       sender: 'support',
       senderName: 'Admin Support (Dhaka Hub)',
-      text: adminReplyText.trim(),
-    });
+      text: reply,
+      timestamp: replyTime,
+      createdAt: Date.now(),
+    };
+
+    // 1. Optimistically update local session messages so Admin sees it immediately!
+    setChatSessions((prev) =>
+      prev.map((s) => {
+        if (s.sessionId === activeSession.sessionId) {
+          return {
+            ...s,
+            lastMessage: reply,
+            lastTimestamp: replyTime,
+            updatedAt: Date.now(),
+            lastSender: 'support',
+            messages: [...s.messages, newMsg],
+          };
+        }
+        return s;
+      })
+    );
     setAdminReplyText('');
-    setIsSendingReply(false);
+    setIsSendingReply(true);
+
+    try {
+      await sendChatMessageToFirestore({
+        sessionId: activeSession.sessionId,
+        sender: 'support',
+        senderName: 'Admin Support (Dhaka Hub)',
+        text: reply,
+      });
+    } catch (err) {
+      console.warn('[Admin Reply] Error sending reply to Firebase:', err);
+    } finally {
+      setIsSendingReply(false);
+    }
+  };
+
+  const handleCreateTestChatSession = async () => {
+    const testSessionId = `visitor_test_${Date.now().toString().slice(-4)}`;
+    try {
+      await sendChatMessageToFirestore({
+        sessionId: testSessionId,
+        sender: 'user',
+        senderName: 'Tanvir Ahmed (Customer)',
+        senderPhone: '01711223344',
+        text: 'আসসালামু আলাইকুম, এই গ্যাজেটের ডেলিভারি কি ঢাকা সিটিতে ২৪ ঘণ্টার মধ্যে সম্ভব?',
+      });
+      setSelectedSessionId(testSessionId);
+    } catch (e) {
+      console.warn('Failed to create test session:', e);
+    }
   };
 
   const handleClearSelectedSession = async () => {
@@ -1072,26 +1130,36 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
                   <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
                     {chatSessions.length === 0 ? (
-                      <div className="p-8 text-center text-slate-400 space-y-2">
+                      <div className="p-8 text-center text-slate-400 space-y-3">
                         <MessageSquare className="w-8 h-8 mx-auto text-slate-300" />
                         <p className="text-xs font-semibold text-slate-600">কোন সক্রিয় চ্যাট নেই</p>
-                        <p className="text-[11px] text-slate-400">
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
                           ওয়েবসাইটে ভিজিটররা লাইভ চ্যাট উইজেটে মেসেজ করলে এখানে আলাদা সেশন হিসেবে আসবে।
                         </p>
+                        <button
+                          type="button"
+                          onClick={handleCreateTestChatSession}
+                          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold border border-blue-200 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>টেস্ট চ্যাট সেশন তৈরি করুন</span>
+                        </button>
                       </div>
                     ) : (
                       chatSessions
                         .filter((session) => {
-                          const query = chatSearch.toLowerCase();
-                          return (
-                            session.senderName.toLowerCase().includes(query) ||
-                            session.senderPhone.toLowerCase().includes(query) ||
-                            session.sessionId.toLowerCase().includes(query) ||
-                            session.lastMessage.toLowerCase().includes(query)
-                          );
+                          const query = (chatSearch || '').toLowerCase().trim();
+                          if (!query) return true;
+                          const name = (session.userName || session.senderName || '').toLowerCase();
+                          const phone = (session.userPhone || session.senderPhone || '').toLowerCase();
+                          const sid = (session.sessionId || '').toLowerCase();
+                          const last = (session.lastMessage || '').toLowerCase();
+                          return name.includes(query) || phone.includes(query) || sid.includes(query) || last.includes(query);
                         })
                         .map((session) => {
                           const isSelected = activeSession?.sessionId === session.sessionId;
+                          const displayName = session.userName || session.senderName || 'Visitor';
+                          const displayPhone = session.userPhone || session.senderPhone || '';
                           return (
                             <button
                               key={session.sessionId}
@@ -1108,16 +1176,16 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center justify-between gap-1">
                                   <span className="text-xs font-bold text-slate-900 truncate">
-                                    {session.senderName || 'Visitor'}
+                                    {displayName}
                                   </span>
                                   <span className="text-[10px] text-slate-400 flex-shrink-0">
                                     {session.lastTimestamp}
                                   </span>
                                 </div>
-                                {session.senderPhone && (
+                                {displayPhone && (
                                   <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-mono">
                                     <Phone className="w-3 h-3" />
-                                    <span>{session.senderPhone}</span>
+                                    <span>{displayPhone}</span>
                                   </div>
                                 )}
                                 <p className="text-xs text-slate-500 truncate mt-0.5">
@@ -1125,7 +1193,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                                 </p>
                               </div>
                               <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700 flex-shrink-0">
-                                {session.messages.length}
+                                {session.messages?.length || 0}
                               </span>
                             </button>
                           );
@@ -1147,11 +1215,11 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="text-xs font-bold text-slate-900">
-                                {activeSession.senderName}
+                                {activeSession.userName || activeSession.senderName || 'Customer'}
                               </span>
-                              {activeSession.senderPhone && (
+                              {(activeSession.userPhone || activeSession.senderPhone) && (
                                 <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
-                                  📞 {activeSession.senderPhone}
+                                  📞 {activeSession.userPhone || activeSession.senderPhone}
                                 </span>
                               )}
                             </div>
@@ -1175,7 +1243,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
                       {/* Messages Feed */}
                       <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#fbfcfd]">
-                        {activeSession.messages.length === 0 ? (
+                        {!activeSession.messages || activeSession.messages.length === 0 ? (
                           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
                             <MessageSquare className="w-8 h-8 mb-2 text-slate-300" />
                             <p className="text-xs font-semibold text-slate-600">কোন মেসেজ রেকর্ড পাওয়া যায়নি</p>
@@ -1212,6 +1280,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                             );
                           })
                         )}
+                        <div ref={adminChatScrollRef} />
                       </div>
 
                       {/* Admin reply form */}
@@ -1223,16 +1292,20 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                           type="text"
                           value={adminReplyText}
                           onChange={(e) => setAdminReplyText(e.target.value)}
-                          placeholder={`${activeSession.senderName}-কে উত্তর দিন...`}
+                          placeholder={`${activeSession.userName || activeSession.senderName || 'গ্রাহক'}-কে উত্তর দিন...`}
                           className="flex-1 h-10 px-3.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 focus:bg-white text-slate-800"
                         />
                         <button
                           type="submit"
                           disabled={!adminReplyText.trim() || isSendingReply}
-                          className="h-10 px-4 bg-[#111827] text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="h-10 px-4 bg-[#111827] text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                         >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>উত্তর পাঠান (Send)</span>
+                          {isSendingReply ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Send className="w-3.5 h-3.5" />
+                          )}
+                          <span>{isSendingReply ? 'পাঠানো হচ্ছে...' : 'উত্তর পাঠান (Send)'}</span>
                         </button>
                       </form>
                     </>

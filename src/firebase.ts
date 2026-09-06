@@ -311,6 +311,8 @@ export interface ChatSessionItem {
   sessionId: string;
   userName: string;
   userPhone: string;
+  senderName: string;
+  senderPhone: string;
   lastMessage: string;
   lastTimestamp: string;
   updatedAt: number;
@@ -328,10 +330,12 @@ export function subscribeToAllChatSessions(
     const sessionsRef = ref(rtdb, 'chat_sessions');
     const unsubscribe = onValue(
       sessionsRef,
-      (snapshot) => {
+      async (snapshot) => {
+        const sessionMap: Record<string, ChatSessionItem> = {};
+
         if (snapshot.exists()) {
           const val = snapshot.val();
-          const sessionList: ChatSessionItem[] = Object.keys(val).map((sid) => {
+          Object.keys(val).forEach((sid) => {
             const s = val[sid];
             const meta = s.meta || {};
             const msgsObj = s.messages || {};
@@ -341,7 +345,7 @@ export function subscribeToAllChatSessions(
                 id: mid,
                 sessionId: sid,
                 sender: m.sender || 'user',
-                senderName: m.senderName || 'Anonymous',
+                senderName: m.senderName || 'Customer',
                 senderPhone: m.senderPhone || '',
                 text: m.text || '',
                 timestamp: m.timestamp || 'Just now',
@@ -351,24 +355,72 @@ export function subscribeToAllChatSessions(
 
             messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
-            return {
+            const firstUserMsg = messages.find((m) => m.sender === 'user');
+            const custName = meta.userName || firstUserMsg?.senderName || (sid.startsWith('user_') ? `Visitor (${sid.slice(-4)})` : 'Customer');
+            const custPhone = meta.userPhone || firstUserMsg?.senderPhone || '';
+            const lastMsg = meta.lastMessage || messages[messages.length - 1]?.text || 'No messages';
+            const lastTime = meta.lastTimestamp || messages[messages.length - 1]?.timestamp || '';
+            const lastUpdated = meta.updatedAt || messages[messages.length - 1]?.createdAt || Date.now();
+
+            sessionMap[sid] = {
               sessionId: sid,
-              userName: meta.userName || messages[0]?.senderName || `Customer (${sid.slice(-4)})`,
-              userPhone: meta.userPhone || messages[0]?.senderPhone || '',
-              lastMessage: meta.lastMessage || messages[messages.length - 1]?.text || 'No messages',
-              lastTimestamp: meta.lastTimestamp || messages[messages.length - 1]?.timestamp || '',
-              updatedAt: meta.updatedAt || messages[messages.length - 1]?.createdAt || Date.now(),
+              userName: custName,
+              userPhone: custPhone,
+              senderName: custName,
+              senderPhone: custPhone,
+              lastMessage: lastMsg,
+              lastTimestamp: lastTime,
+              updatedAt: lastUpdated,
               lastSender: meta.lastSender || messages[messages.length - 1]?.sender || 'user',
               messages,
             };
           });
-
-          // Sort by latest message first
-          sessionList.sort((a, b) => b.updatedAt - a.updatedAt);
-          onData(sessionList);
-        } else {
-          onData([]);
         }
+
+        // Also check if legacy chats node has any messages to merge
+        try {
+          const legacySnap = await get(ref(rtdb, 'chats'));
+          if (legacySnap.exists()) {
+            const legacyVal = legacySnap.val();
+            Object.keys(legacyVal).forEach((key) => {
+              const d = legacyVal[key];
+              const sid = d.sessionId || 'general_inquiries';
+              const msg: ChatMessage = {
+                id: key,
+                sessionId: sid,
+                sender: d.sender || 'user',
+                senderName: d.senderName || 'Customer',
+                senderPhone: d.senderPhone || '',
+                text: d.text || '',
+                timestamp: d.timestamp || 'Just now',
+                createdAt: d.createdAt || 0,
+              };
+
+              if (!sessionMap[sid]) {
+                sessionMap[sid] = {
+                  sessionId: sid,
+                  userName: d.senderName || 'Customer (Inquiry)',
+                  userPhone: d.senderPhone || '',
+                  senderName: d.senderName || 'Customer (Inquiry)',
+                  senderPhone: d.senderPhone || '',
+                  lastMessage: d.text || '',
+                  lastTimestamp: d.timestamp || 'Just now',
+                  updatedAt: d.createdAt || Date.now(),
+                  lastSender: d.sender || 'user',
+                  messages: [],
+                };
+              }
+              if (!sessionMap[sid].messages.some((m) => m.id === key)) {
+                sessionMap[sid].messages.push(msg);
+                sessionMap[sid].messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+              }
+            });
+          }
+        } catch {}
+
+        const sessionList = Object.values(sessionMap);
+        sessionList.sort((a, b) => b.updatedAt - a.updatedAt);
+        onData(sessionList);
       },
       (err) => {
         console.warn('[Firebase RTDB] Chat sessions subscription warning:', err);
